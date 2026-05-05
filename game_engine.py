@@ -267,8 +267,8 @@ class GameEngine:
                 self._pending_acquire  = False
                 sellable = self._get_sellable_props(player)
                 names = ", ".join(
-                    f"{self.board[i]['name']}({self.board[i]['price']//2:,}원)"
-                    for i in sellable
+                    f"{prop['name']}({prop['sell_price']:,}원)"
+                    for prop in sellable
                 )
                 self._log(f"{player.name} 세금 잔액 부족! 매각 가능 땅: {names}")
                 self._log("매각하시겠습니까? (매각가: 원가의 50%)")
@@ -322,8 +322,8 @@ class GameEngine:
                 self._pending_space_others = others   # 분배 대상 저장
                 sellable = self._get_sellable_props(player)
                 names = ", ".join(
-                    f"{self.board[i]['name']}({self.board[i]['price']//2:,}원)"
-                    for i in sellable
+                    f"{prop['name']}({prop['sell_price']:,}원)"
+                    for prop in sellable
                 )
                 self._log(f"{player.name} 우주여행 비용 부족! 매각 가능 땅: {names}")
                 self._log("매각하시겠습니까? (매각가: 원가의 50%)")
@@ -365,7 +365,7 @@ class GameEngine:
             self._pending_label    = label
             self._pending_acquire  = allow_acquire
             sellable = self._get_sellable_props(payer)
-            names = ", ".join(f"{self.board[i]['name']}({self.board[i]['price']//2:,}원)" for i in sellable)
+            names = ", ".join(f"{prop['name']}({prop['sell_price']:,}원)" for prop in sellable)
             self._log(f"{payer.name} 잔액 부족! 매각 가능 땅: {names}")
             self._log("매각하시겠습니까? (매각가: 원가의 50%)")
             self.phase = GamePhase.SELL_PROMPT
@@ -402,9 +402,17 @@ class GameEngine:
         self._check_bankrupt(player)
         self._advance_turn()
 
-    def _get_sellable_props(self, player: Player) -> list[int]:
-        """매각 가능한 땅 목록 반환 (소유 땅 전체)."""
-        return list(player.owned_props)
+    def _get_sellable_props(self, player: Player) -> list[dict]:
+        """매각 가능한 땅 목록 반환 (이름·가격·매각가 포함)."""
+        return [
+            {
+                "index":      i,
+                "name":       self.board[i]["name"],
+                "price":      self.board[i]["price"],
+                "sell_price": self.board[i]["price"] // 2,
+            }
+            for i in player.owned_props
+        ]
 
     def decide_sell(self, sell: bool, prop_idx: int = None) -> dict:
         """
