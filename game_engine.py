@@ -1,3 +1,4 @@
+import copy
 import random
 from enum import Enum
 
@@ -11,17 +12,18 @@ class SquareType(Enum):
     JAIL_VISIT = "jail_visit"
     GO_TO_JAIL = "go_to_jail"
     FREE       = "free"
-    FESTIVAL   = "festival"    # 축제: 전원에게 돈 받기
-    SPACE      = "space"       # 우주여행: 전원에게 돈 지불
+    FESTIVAL   = "festival"    # 축제: 소유 땅 통행료 2배
+    SPACE      = "space"       # 우주여행: 다음 턴에 원하는 곳으로 이동
 
 
 class GamePhase(Enum):
-    WAITING     = "waiting"
-    ROLL        = "roll"
-    ACTION      = "action"
-    BUY_PROMPT  = "buy_prompt"
-    SELL_PROMPT = "sell_prompt"   # 통행료 부족 시 매각 여부 결정
-    ENDED       = "ended"
+    WAITING         = "waiting"
+    ROLL            = "roll"
+    ACTION          = "action"
+    BUY_PROMPT      = "buy_prompt"
+    SELL_PROMPT     = "sell_prompt"      # 통행료 부족 시 매각 여부 결정
+    FESTIVAL_PROMPT = "festival_prompt"  # 축제: 플레이어가 땅 선택 대기
+    ENDED           = "ended"
 
 
 BOARD_SIZE     = 28
@@ -30,8 +32,6 @@ SALARY         = 200_000
 JAIL_SQUARE    = 9
 TAX_AMOUNT     = 1_500_000
 TRANSPORT_FEE  = 1_500_000
-FESTIVAL_EARN  = 300_000     # 축제: 다른 플레이어 1인당 받는 금액
-SPACE_PAY      = 300_000     # 우주여행: 다른 플레이어 1인당 지불 금액
 
 
 BOARD_SQUARES = [
@@ -88,6 +88,7 @@ class Player:
         self.position    = 0
         self.skip_turns  = 0
         self.is_bankrupt = False
+        self.is_in_space = False
         self.owned_props: list[int] = []
 
     def net_worth(self, board: list[dict]) -> int:
@@ -105,7 +106,7 @@ class Player:
 
 class GameEngine:
     def __init__(self):
-        self.board:    list[dict]       = BOARD_SQUARES
+        self.board:    list[dict]       = copy.deepcopy(BOARD_SQUARES)
         self.players:  list[Player]     = []
         self.turn_idx: int              = 0
         self.phase:    GamePhase        = GamePhase.WAITING
@@ -117,7 +118,6 @@ class GameEngine:
         self._pending_receiver: Player = None
         self._pending_label:    str    = ""
         self._pending_acquire:  bool   = False
-        self._pending_space_others: list  = []   # 우주여행 분배 대상
 
     # ── 공개 API ───────────────────────────────────────────────────────────
 
@@ -137,6 +137,9 @@ class GameEngine:
             raise RuntimeError(f"지금은 주사위를 굴릴 수 없습니다. (phase={self.phase})")
 
         player = self.current_player
+
+        if player.is_in_space:
+            raise RuntimeError(f"{player.name}는 우주여행 중입니다. space_travel()을 사용하세요.")
 
         if player.skip_turns > 0:
             player.skip_turns -= 1
@@ -170,6 +173,56 @@ class GameEngine:
         self._advance_turn()
         return self.get_state()
 
+    def decide_festival(self, prop_idx: int) -> dict:
+        """
+        FESTIVAL_PROMPT 단계에서 선택한 땅의 통행료를 2배로 만듭니다.
+
+        Args:
+            prop_idx : 통행료를 2배로 올릴 땅의 보드 인덱스
+
+        Returns:
+            get_state() 스냅샷
+        """
+        if self.phase != GamePhase.FESTIVAL_PROMPT:
+            raise RuntimeError("지금은 축제 선택 단계가 아닙니다.")
+
+        player = self.current_player
+        if prop_idx not in player.owned_props:
+            raise ValueError(f"[{prop_idx}]는 {player.name}의 소유 땅이 아닙니다.")
+
+        self.board[prop_idx]["rent"] *= 2
+        sq = self.board[prop_idx]
+        self._log(f"{player.name} 축제! [{sq['name']}] 통행료 2배 → {sq['rent']:,}원")
+        self._advance_turn()
+        return self.get_state()
+
+    def space_travel(self, target_idx: int) -> dict:
+        """
+        우주여행 중인 플레이어가 원하는 칸으로 이동합니다.
+        roll_dice() 대신 호출합니다.
+
+        Args:
+            target_idx : 이동할 보드 칸 인덱스 (0~BOARD_SIZE-1)
+
+        Returns:
+            get_state() 스냅샷
+        """
+        if self.phase != GamePhase.ROLL:
+            raise RuntimeError(f"지금은 이동할 수 없습니다. (phase={self.phase})")
+
+        player = self.current_player
+        if not player.is_in_space:
+            raise RuntimeError(f"{player.name}는 우주여행 중이 아닙니다.")
+
+        if not (0 <= target_idx < BOARD_SIZE):
+            raise ValueError(f"잘못된 보드 인덱스입니다: {target_idx} (유효 범위: 0~{BOARD_SIZE - 1})")
+
+        player.is_in_space = False
+        self._move_to(player, target_idx, give_salary=target_idx < player.position)
+        self.phase = GamePhase.ACTION
+        self._apply_square_effect(player)
+        return self.get_state()
+
     def get_state(self) -> dict:
         return {
             "phase":     self.phase.value,
@@ -185,6 +238,7 @@ class GameEngine:
                     "position":    p.position,
                     "skip_turns":  p.skip_turns,
                     "is_bankrupt": p.is_bankrupt,
+                    "is_in_space": p.is_in_space,
                     "owned_props": list(p.owned_props),
                     "net_worth":   p.net_worth(self.board),
                 }
@@ -294,42 +348,19 @@ class GameEngine:
             self._advance_turn()
 
         elif stype == SquareType.FESTIVAL:
-            # 축제: 생존한 다른 플레이어 1인당 FESTIVAL_EARN 받기
-            others = [p for p in self._active_players() if p.player_id != player.player_id]
-            total = 0
-            for other in others:
-                earn = min(FESTIVAL_EARN, other.money)
-                other.money  -= earn
-                player.money += earn
-                total += earn
-                self._log(f"{other.name} → {player.name} 축제 분담금 -{earn:,}원")
-            self._log(f"{player.name} 축제! 총 +{total:,}원 획득 (잔액 {player.money:,}원)")
-            # 분담금 낸 플레이어 파산 체크
-            for other in others:
-                self._check_bankrupt(other)
-            self._advance_turn()
+            # 축제: 소유한 땅이 있으면 선택 프롬프트, 없으면 턴 넘기기
+            if player.owned_props:
+                self._log(f"{player.name} 축제! 소유한 땅 중 하나를 선택하면 통행료가 2배가 됩니다.")
+                self.phase = GamePhase.FESTIVAL_PROMPT
+            else:
+                self._log(f"{player.name} 축제! 소유한 땅이 없어 효과 없음.")
+                self._advance_turn()
 
         elif stype == SquareType.SPACE:
-            # 우주여행: 생존한 다른 플레이어 1인당 SPACE_PAY 지불
-            others = [p for p in self._active_players() if p.player_id != player.player_id]
-            total_needed = SPACE_PAY * len(others)
-            if total_needed > player.money and player.owned_props:
-                # 잔액 부족 시 매각 프롬프트
-                self._pending_fee      = total_needed
-                self._pending_receiver = None   # 우주여행은 다수에게 분배 → 특수 처리
-                self._pending_label    = "우주여행 비용"
-                self._pending_acquire  = False
-                self._pending_space_others = others   # 분배 대상 저장
-                sellable = self._get_sellable_props(player)
-                names = ", ".join(
-                    f"{self.board[i]['name']}({self.board[i]['price']//2:,}원)"
-                    for i in sellable
-                )
-                self._log(f"{player.name} 우주여행 비용 부족! 매각 가능 땅: {names}")
-                self._log("매각하시겠습니까? (매각가: 원가의 50%)")
-                self.phase = GamePhase.SELL_PROMPT
-            else:
-                self._pay_space(player, others)
+            # 우주여행: 다음 턴에 원하는 곳으로 이동
+            self._log(f"{player.name} 우주여행! 다음 턴에 원하는 곳으로 이동할 수 있습니다.")
+            player.is_in_space = True
+            self._advance_turn()
 
     def _draw_chance(self, player: Player) -> None:
         card = random.choice(CHANCE_CARDS)
@@ -389,19 +420,6 @@ class GameEngine:
         self._advance_turn()
 
 
-    def _pay_space(self, player, others: list) -> None:
-        """우주여행: player가 others 각각에게 SPACE_PAY 지불."""
-        total = 0
-        for other in others:
-            pay = min(SPACE_PAY, player.money)
-            player.money -= pay
-            other.money  += pay
-            total += pay
-            self._log(f"{player.name} → {other.name} 우주여행 비용 -{pay:,}원")
-        self._log(f"{player.name} 우주여행! 총 -{total:,}원 (잔액 {player.money:,}원)")
-        self._check_bankrupt(player)
-        self._advance_turn()
-
     def _get_sellable_props(self, player: Player) -> list[int]:
         """매각 가능한 땅 목록 반환 (소유 땅 전체)."""
         return list(player.owned_props)
@@ -448,19 +466,15 @@ class GameEngine:
 
             if player.money >= amount:
                 # 매각 후 잔액 충분 → 지불
-                if self._pending_space_others:
-                    # 우주여행: 다수에게 분배
-                    self._pay_space(player, self._pending_space_others)
-                else:
-                    _pay(player, amount, receiver, label)
-                    # 인수 가능 여부 확인 (통행료인 경우만)
-                    if acquire and not player.is_bankrupt:
-                        sq = self.board[player.position]
-                        if player.money >= sq["price"]:
-                            self._log(f"{sq['name']} 인수 가능 (가격 {sq['price']:,}원). 구매하시겠습니까?")
-                            self.phase = GamePhase.BUY_PROMPT
-                            return self.get_state()
-                    self._advance_turn()
+                _pay(player, amount, receiver, label)
+                # 인수 가능 여부 확인 (통행료인 경우만)
+                if acquire and not player.is_bankrupt:
+                    sq = self.board[player.position]
+                    if player.money >= sq["price"]:
+                        self._log(f"{sq['name']} 인수 가능 (가격 {sq['price']:,}원). 구매하시겠습니까?")
+                        self.phase = GamePhase.BUY_PROMPT
+                        return self.get_state()
+                self._advance_turn()
             else:
                 # 매각해도 여전히 부족
                 if player.owned_props:
@@ -473,25 +487,18 @@ class GameEngine:
                     self.phase = GamePhase.SELL_PROMPT
                 else:
                     # 더 팔 땅 없음 → 있는 돈만큼 내고 파산
-                    if self._pending_space_others:
-                        self._pay_space(player, self._pending_space_others)
-                    else:
-                        _pay(player, amount, receiver, label, " (잔액 부족, 파산)")
+                    _pay(player, amount, receiver, label, " (잔액 부족, 파산)")
                     self._advance_turn()
         else:
             # 매각 거부 → 있는 돈만큼만 내고 파산
-            if self._pending_space_others:
-                self._pay_space(player, self._pending_space_others)
-            else:
-                _pay(player, amount, receiver, label, " (매각 거부, 파산)")
+            _pay(player, amount, receiver, label, " (매각 거부, 파산)")
             self._advance_turn()
 
         # 임시 상태 정리
-        self._pending_fee          = 0
-        self._pending_receiver     = None
-        self._pending_label        = ""
-        self._pending_acquire      = False
-        self._pending_space_others = []
+        self._pending_fee      = 0
+        self._pending_receiver = None
+        self._pending_label    = ""
+        self._pending_acquire  = False
 
         return self.get_state()
 
