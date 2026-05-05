@@ -215,7 +215,7 @@ class GameEngine:
             raise RuntimeError(f"{player.name}는 우주여행 중이 아닙니다.")
 
         if not (0 <= target_idx < BOARD_SIZE):
-            raise ValueError(f"잘못된 보드 인덱스입니다: {target_idx}")
+            raise ValueError(f"잘못된 보드 인덱스입니다: {target_idx} (유효 범위: 0~{BOARD_SIZE - 1})")
 
         player.is_in_space = False
         self._move_to(player, target_idx, give_salary=target_idx < player.position)
