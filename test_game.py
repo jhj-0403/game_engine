@@ -106,6 +106,27 @@ def main():
         for msg in gf.engine.event_log[-3:]:
             print(f"  → {msg}")
 
+        # ── 매각 프롬프트 ────────────────────────────
+        while gf.engine.phase == GamePhase.SELL_PROMPT:
+            props = gf.get_sellable_properties()
+            print(f"\n  잔액 부족! 부동산을 매각하시겠습니까? (잔액: {player.money:,}원)")
+            for idx, p in enumerate(props):
+                print(f"  [{idx}] {p['name']} (매각가: {p['sell_price']:,}원)")
+            ans = input("  매각할 번호 입력 (없으면 'n'으로 거부): ").strip().lower()
+            if ans == 'n':
+                gf.reject_property_sale()
+            else:
+                try:
+                    choice = int(ans)
+                    if 0 <= choice < len(props):
+                        gf.select_property_to_sell(props[choice]["index"])
+                    else:
+                        print("  잘못된 번호입니다.")
+                except ValueError:
+                    print("  숫자 또는 'n'을 입력하세요.")
+            for msg in gf.engine.event_log[-3:]:
+                print(f"  → {msg}")
+
         # ── 구매 프롬프트 ────────────────────────────
         if gf.engine.phase == GamePhase.BUY_PROMPT:
             sq = gf.engine.board[player.position]

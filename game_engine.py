@@ -471,6 +471,7 @@ class GameEngine:
                     )
                     self._log(f"아직 부족합니다. 추가 매각 가능 땅: {names}")
                     self.phase = GamePhase.SELL_PROMPT
+                    return self.get_state()  # 임시 상태 유지를 위해 조기 반환
                 else:
                     # 더 팔 땅 없음 → 있는 돈만큼 내고 파산
                     if self._pending_space_others:
