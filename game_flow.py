@@ -52,6 +52,60 @@ class GameFlowManager:
         self.engine._apply_square_effect(player)
         self.game_state = GameState.MOVING
 
+
+    # ── 매각 ──────────────────────────────────────────────────────
+
+    def get_sellable_properties(self) -> list:
+        """
+        현재 플레이어가 매각 가능한 부동산 목록 반환.
+        각 항목: {"name": str, "index": int, "sell_price": int}
+        """
+        player = self.engine.current_player
+        sellable = self.engine._get_sellable_props(player)
+        return [
+            {
+                "name":       self.engine.board[i]["name"],
+                "index":      i,
+                "sell_price": self.engine.board[i]["price"] // 2,
+            }
+            for i in sellable
+        ]
+
+    def select_property_to_sell(self, prop_idx: int) -> dict:
+        """
+        플레이어가 선택한 부동산을 매각하고 상태를 업데이트한다.
+
+        Args:
+            prop_idx: 매각할 땅의 보드 인덱스
+
+        Returns:
+            engine 상태 스냅샷 (sellable_properties 키 포함)
+        """
+        if self.engine.phase != GamePhase.SELL_PROMPT:
+            return {}
+        state = self.engine.decide_sell(True, prop_idx)
+        if self.engine.phase != GamePhase.SELL_PROMPT:
+            self.game_state = GameState.WAITING_DICE
+        state["sellable_properties"] = (
+            self.get_sellable_properties()
+            if self.engine.phase == GamePhase.SELL_PROMPT
+            else []
+        )
+        return state
+
+    def reject_property_sale(self) -> dict:
+        """
+        플레이어가 매각을 거부할 때 호출 → 파산 처리.
+
+        Returns:
+            engine 상태 스냅샷
+        """
+        if self.engine.phase != GamePhase.SELL_PROMPT:
+            return {}
+        state = self.engine.decide_sell(False)
+        self.game_state = GameState.WAITING_DICE
+        return state
+
     # ── 구매 ──────────────────────────────────────────────────────
 
     def purchase_property(self, decision: bool) -> bool:
